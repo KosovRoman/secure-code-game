@@ -12,13 +12,14 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	"net/http"
 	"regexp"
 )
 
-var reqBody struct {
+type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
@@ -46,7 +47,8 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == "POST" {
 
-		decode := json.NewDecoder(r.Body)
+		var reqBody loginRequest
+		decode := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 		decode.DisallowUnknownFields()
 
 		err := decode.Decode(&reqBody)
@@ -58,21 +60,17 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		password := reqBody.Password
 
 		if !isValidEmail(email) {
-			log.Printf("Invalid email format: %q", email)
+			log.Printf("Invalid email format")
 			http.Error(w, "Invalid email format", http.StatusBadRequest)
 			return
 		}
 
 		storedPassword, ok := testFakeMockUsers[email]
-		if !ok {
-			http.Error(w, "invalid email or password", http.StatusUnauthorized)
-			return
-		}
-
-		if password == storedPassword {
-			log.Printf("User %q logged in successfully with a valid password %q", email, password)
+		if ok && subtle.ConstantTimeCompare([]byte(password), []byte(storedPassword)) == 1 {
+			log.Printf("Successful login request")
 			w.WriteHeader(http.StatusOK)
 		} else {
+			log.Printf("Failed login request")
 			http.Error(w, "Invalid Email or Password", http.StatusUnauthorized)
 		}
 
