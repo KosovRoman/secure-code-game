@@ -15,23 +15,36 @@ const libxmljs = require("libxmljs");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const { exec } = require("node:child_process");
+const rateLimit = require("express-rate-limit");
 const app = express();
 
-app.use(bodyParser.json());
-app.use(bodyParser.text({ type: "application/xml" }));
+app.use(bodyParser.json({ limit: "100kb" }));
+app.use(bodyParser.text({ type: "application/xml", limit: "100kb" }));
 
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({ storage, limits: { fileSize: 1024 * 1024 } });
 
-app.post("/ufo/upload", upload.single("file"), (req, res) => {
+const UPLOAD_DIR = path.join(__dirname, "uploads");
+
+const uploadLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20 });
+
+app.post("/ufo/upload", uploadLimiter, upload.single("file"), (req, res) => {
   if (!req.file) {
     return res.status(400).send("No file uploaded.");
   }
 
-  console.log("Received uploaded file:", req.file.originalname);
+  const safeName = path.basename(req.file.originalname);
+  if (!/^[\w-]+\.(xml|txt|json)$/i.test(safeName)) {
+    return res.status(400).send("Invalid file name.");
+  }
 
-  const uploadedFilePath = path.join(__dirname, req.file.originalname);
+  const uploadedFilePath = path.join(UPLOAD_DIR, safeName);
+  if (path.dirname(uploadedFilePath) !== UPLOAD_DIR) {
+    return res.status(400).send("Invalid file name.");
+  }
+
+  console.log("Received uploaded file:", safeName);
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   fs.writeFileSync(uploadedFilePath, req.file.buffer);
 
   res.status(200).send("File uploaded successfully.");
@@ -45,13 +58,21 @@ app.post("/ufo", (req, res) => {
     res.status(200).json({ ufo: "Received JSON data from an unknown planet." });
   } else if (contentType === "application/xml") {
     try {
+      if (typeof req.body !== "string" || /<!DOCTYPE|<!ENTITY/i.test(req.body)) {
+        throw new Error("DTDs and entities are not allowed");
+      }
+
       const xmlDoc = libxmljs.parseXml(req.body, {
-        replaceEntities: true,
-        recover: true,
-        nonet: false,
+        replaceEntities: false,
+        recover: false,
+        nonet: true,
       });
 
-      console.log("Received XML data from XMLon:", xmlDoc.toString());
+      if (!xmlDoc.root()) {
+        throw new Error("Empty document");
+      }
+
+      console.log("Received XML data from XMLon");
 
       const extractedContent = [];
 
@@ -64,30 +85,13 @@ app.post("/ufo", (req, res) => {
           }
         });
 
-      // Secret feature to allow an "admin" to execute commands
-      if (
-        xmlDoc.toString().includes('SYSTEM "') &&
-        xmlDoc.toString().includes(".admin")
-      ) {
-        extractedContent.forEach((command) => {
-          exec(command, (err, output) => {
-            if (err) {
-              console.error("could not execute command: ", err);
-              return;
-            }
-            console.log("Output: \n", output);
-            res.status(200).set("Content-Type", "text/plain").send(output);
-          });
-        });
-      } else {
-        res
-          .status(200)
-          .set("Content-Type", "text/plain")
-          .send(extractedContent.join(" "));
-      }
+      res
+        .status(200)
+        .set("Content-Type", "text/plain")
+        .send(extractedContent.join(" "));
     } catch (error) {
       console.error("XML parsing or validation error:", error.message);
-      res.status(400).send("Invalid XML: " + error.message);
+      res.status(400).send("Invalid XML");
     }
   } else {
     res.status(405).send("Unsupported content type");
