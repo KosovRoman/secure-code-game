@@ -53,5 +53,24 @@ def index():
 def get_planet_info(planet):
     return planet_data.get(planet, 'Unknown planet.')
 
+@app.after_request
+def set_security_headers(response):
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'sha256-" + DETAILS_SCRIPT_HASH + "'; object-src 'none'"
+    )
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+def _inline_script_hash():
+    import base64, hashlib
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'details.html')
+    with open(path, encoding='utf-8') as f:
+        html = f.read()
+    script = html.split('<script>', 1)[1].split('</script>', 1)[0]
+    return base64.b64encode(hashlib.sha256(script.encode('utf-8')).digest()).decode()
+
+DETAILS_SCRIPT_HASH = _inline_script_hash()
+
 if __name__ == '__main__':
     app.run()
